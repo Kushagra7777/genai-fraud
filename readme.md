@@ -24,7 +24,7 @@ OPENAI_API_KEY=sk-proj-......
 
 
 
-### 5. create .env file with below context
+### 5. Run the script with this command
 ```bash
 python script.py --video videos/Real/video-662.mp4 --out video_analysis.json --save-frames frames_out --interval 0.5 --max-total 60 --batch-size 20 --model gpt-4o
 ```
