@@ -1,0 +1,41 @@
+{
+  "verdict": "ai_detected",
+  "confidence": 100,
+  "overall_rationale": "Watermark rule triggered in at least one batch.",
+  "_batches": [
+    {
+      "verdict": "ai_detected",
+      "confidence": 100,
+      "key_signals": [
+        {
+          "name": "Watermark rule",
+          "evidence": "Watermark or blurred watermark region detected"
+        }
+      ],
+      "per_frame_notes": {},
+      "overall_rationale": "Watermark or its erasure detected; video classified as AI-generated with full confidence."
+    }
+  ],
+  "_frame_indices": [
+    0,
+    15,
+    30,
+    45,
+    60,
+    75,
+    90,
+    105,
+    120,
+    135,
+    150,
+    165,
+    180,
+    195,
+    210,
+    225,
+    240,
+    255,
+    270,
+    285
+  ]
+}
