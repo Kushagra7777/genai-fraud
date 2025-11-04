@@ -95,19 +95,61 @@ def encode_jpg(frame, quality=90) -> bytes:
         raise RuntimeError("JPEG encoding failed")
     return buf.tobytes()
 
-def extract_interval_frames(video_path: str, interval_sec: float = 1.0) -> Tuple[List[bytes], List[int]]:
+# def extract_interval_frames(video_path: str, interval_sec: float = 1.0) -> Tuple[List[bytes], List[int]]:
+#     cap = cv2.VideoCapture(video_path)
+#     if not cap.isOpened():
+#         raise RuntimeError("Could not open video: {0}".format(video_path))
+#     fps = cap.get(cv2.CAP_PROP_FPS)
+#     total_frames = int(cv2.CAP_PROP_FRAME_COUNT and cap.get(cv2.CAP_PROP_FRAME_COUNT))
+#     if not fps or fps <= 0 or total_frames <= 0:
+#         raise RuntimeError("Video metadata invalid (fps/frame count).")
+#     duration = float(total_frames) / float(fps)
+
+#     # build timestamps 0,1,2,... up to duration (exclusive)
+#     stamps = [i * interval_sec for i in range(int(duration / interval_sec))]
+#     frame_indices = [min(int(t * fps), total_frames - 1) for t in stamps]
+
+#     frames_jpg, final_indices = [], []
+#     for idx in frame_indices:
+#         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+#         ret, frame = cap.read()
+#         if not ret or frame is None:
+#             continue
+#         frame = resize_keep_aspect(frame, max_w=640)
+#         jpg = encode_jpg(frame, quality=90)
+#         frames_jpg.append(jpg)
+#         final_indices.append(idx)
+#     cap.release()
+#     if not frames_jpg:
+#         raise RuntimeError("No frames extracted.")
+#     return frames_jpg, final_indices
+
+
+def extract_interval_frames(video_path: str) -> Tuple[List[bytes], List[int]]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Could not open video: {0}".format(video_path))
+
     fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cv2.CAP_PROP_FRAME_COUNT and cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if not fps or fps <= 0 or total_frames <= 0:
-        raise RuntimeError("Video metadata invalid (fps/frame count).")
+        raise RuntimeError("Invalid video metadata (fps/frame count).")
+
     duration = float(total_frames) / float(fps)
 
-    # build timestamps 0,1,2,... up to duration (exclusive)
-    stamps = [i * interval_sec for i in range(int(duration / interval_sec))]
-    frame_indices = [min(int(t * fps), total_frames - 1) for t in stamps]
+    # adaptive interval selection
+    if duration < 10:
+        interval_sec = 0.5
+    elif duration < 30:
+        interval_sec = 1.0
+    elif duration < 60:
+        interval_sec = 2.0
+    else:
+        interval_sec = 2.5
+
+    # compute frame indices based on interval
+    frame_indices = [min(int(t * fps), total_frames - 1)
+                     for t in [i * interval_sec for i in range(int(duration / interval_sec))]]
 
     frames_jpg, final_indices = [], []
     for idx in frame_indices:
@@ -116,13 +158,17 @@ def extract_interval_frames(video_path: str, interval_sec: float = 1.0) -> Tuple
         if not ret or frame is None:
             continue
         frame = resize_keep_aspect(frame, max_w=640)
-        jpg = encode_jpg(frame, quality=90)
-        frames_jpg.append(jpg)
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        if not ok:
+            continue
+        frames_jpg.append(buf.tobytes())
         final_indices.append(idx)
+
     cap.release()
     if not frames_jpg:
         raise RuntimeError("No frames extracted.")
     return frames_jpg, final_indices
+
 
 def to_data_url(jpg_bytes: bytes) -> str:
     b64 = base64.b64encode(jpg_bytes).decode("utf-8")
@@ -239,12 +285,14 @@ def main():
     ap.add_argument("--out", default="video_analysis.json", help="Where to save final JSON")
     ap.add_argument("--save-frames", default=None, help="Optional folder to write extracted frames")
     ap.add_argument("--model", default="gpt-4o", help="OpenAI model (e.g., gpt-4o, gpt-4o-mini)")
-    ap.add_argument("--interval", type=float, default=1.0, help="Seconds between frames (default 1.0 sec)")
+    # ap.add_argument("--interval", type=float, default=1.0, help="Seconds between frames (default 1.0 sec)")
     ap.add_argument("--max-total", type=int, default=60, help="Max frames to send (avoid context errors)")
     ap.add_argument("--batch-size", type=int, default=20, help="Images per API request")
     args = ap.parse_args()
 
-    frames_jpg, frame_indices = extract_interval_frames(args.video, interval_sec=args.interval)
+    # frames_jpg, frame_indices = extract_interval_frames(args.video, interval_sec=args.interval)
+    frames_jpg, frame_indices = extract_interval_frames(args.video)
+
 
     if len(frames_jpg) > args.max_total:
         step = float(len(frames_jpg)) / float(args.max_total)
