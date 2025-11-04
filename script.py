@@ -16,36 +16,48 @@ from openai import OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ---------- PROMPT ----------
-FORENSIC_PROMPT = """You are a forensic media analyst. Determine whether these frames sampled every 0.5s across a video suggest the overall video is REAL or AI-GENERATED.
+FORENSIC_PROMPT = """You are a forensic media analyst. Analyze the sequence of frames—sampled once per second from a video—to assess whether the video is REAL or AI-GENERATED.
 
-STRICT RULES (override everything):
-1) If a visible watermark is present (any kind), the video is 100% AI-GENERATED.
-2) If there is obvious blur/smudge/erasure where a watermark would typically be (corners/edges/lower thirds), classify as 100% AI-GENERATED.
+**Your tasks:**
+1. **Reconstruct a coherent narrative**: Combine the frames in chronological order to describe what is happening in the scene (e.g., "A man is speaking on the phone in a room filled with water bottles").
+2. **Evaluate realism**: Use your own reasoning to judge if the reconstructed story is physically plausible, logically consistent, and practically feasible in the real world.
+3. **Apply the following scoring criteria (each worth 1 point if triggered):**
 
-Otherwise analyze:
-- Temporal coherence between nearby frames (lighting/tone/skin hue consistency).
-- Realistic motion blur/rolling shutter; consistent grain/compression signatures.
-- Geometry/edges: hands, eyes, teeth, hair, text, reflections/shadows.
-- Too-clean microtextures, shimmer/flicker, diffusion-seams, texture crawling.
+   - **Criterion 1 (Physical Implausibility)**:  
+     If the reconstructed story describes events, objects, or behaviors that are unrealistic, physically impossible, or highly implausible (e.g., "a man flying in space with an elephant on his back"), assign 1 point. Otherwise, 0.
 
-OUTPUT STRICTLY JSON:
+   - **Criterion 2 (Watermark or Tampering)**:  
+     If any frame contains a visible watermark OR shows suspicious blur/smudging/erasure in typical watermark zones (e.g., corners, lower thirds, edges)—suggesting post-generation watermark removal—assign 1 point. Otherwise, 0.
+
+   - **Criterion 3 (Inconsistent Object Scaling)**:  
+     Compare the aspect ratio or relative scale of moving objects against static background objects across frames. If the moving object’s size, perspective, or proportions change erratically or unrealistically (e.g., a person shrinking/growing without camera motion), assign 1 point. Otherwise, 0.
+
+4. **Final Classification**:
+   - Total Score = Sum of points from the 3 criteria (max 3).
+   - **3/3 → "ai_detected" (100% AI)**
+   - **2/3 → "ai_suspected" (66% AI)**
+   - **1/3 → "ai_suspected" (33% AI)**
+   - **0/3 → "real"**
+
+**Additional Guidance**:
+- Use your own knowledge of physics, human behavior, everyday environments, and visual consistency to judge plausibility.
+- Be conservative: only assign points when evidence is clear.
+- Even if no rule is explicitly violated, if the frames collectively "feel off" (e.g., unnatural lighting shifts, texture crawling, inconsistent shadows, or impossible geometry), lean toward suspicion—but only assign points if one of the three criteria is truly met.
+
+**OUTPUT STRICTLY IN JSON FORMAT**:
 {
-  "verdict": "real" | "ai_suspected" | "ai_detected" | "inconclusive",
-  "confidence": 0-100,
-  "key_signals": [{"name": "...", "evidence": "..."}],
-  "per_frame_notes": {"frame_index_<i>": "short note"},
-  "overall_rationale": "2-5 sentences"
+  "verdict": "real" | "ai_suspected" | "ai_detected",
+  "ai_probability_percent": 0 | 33 | 66 | 100,
+  "story_reconstruction": "Brief narrative of what happens across frames",
+  "score_breakdown": {
+    "physical_implausibility": 0 | 1,
+    "watermark_or_tampering": 0 | 1,
+    "inconsistent_object_scaling": 0 | 1
+  },
+  "key_signals": [{"criterion": "...", "observation": "..."}],
+  "per_frame_notes": {"frame_index_<i>": "concise anomaly or observation"},
+  "overall_rationale": "2-5 sentences explaining the score, story realism, and forensic concerns."
 }
-
-If rule (1) or (2) triggers, respond:
-{
-  "verdict": "ai_detected",
-  "confidence": 100,
-  "key_signals": [{"name": "Watermark rule", "evidence": "Watermark or blurred watermark region detected"}],
-  "per_frame_notes": {},
-  "overall_rationale": "Watermark or its erasure detected; video classified as AI-generated with full confidence."
-}
-Be conservative; if evidence is weak, use "inconclusive".
 """
 
 # ---------- VIDEO UTILS ----------
