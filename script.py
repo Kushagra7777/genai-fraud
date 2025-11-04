@@ -1,4 +1,4 @@
-import os, cv2, json, base64, argparse, math
+import os, cv2, json, base64, argparse
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
@@ -15,49 +15,69 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 from openai import OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- PROMPT ----------
-FORENSIC_PROMPT = """You are a forensic media analyst. Analyze the sequence of frames—sampled once per second from a video—to assess whether the video is REAL or AI-GENERATED.
+# ---------- PROMPT (1 frame per second, scoring = 0/33/66/100) ----------
+# FORENSIC_PROMPT = """You are a forensic media analyst. Analyze the sequence of frames — sampled once per second from a video — to assess whether the video is REAL or AI-GENERATED.
 
-**Your tasks:**
-1. **Reconstruct a coherent narrative**: Combine the frames in chronological order to describe what is happening in the scene (e.g., "A man is speaking on the phone in a room filled with water bottles").
-2. **Evaluate realism**: Use your own reasoning to judge if the reconstructed story is physically plausible, logically consistent, and practically feasible in the real world.
-3. **Apply the following scoring criteria (each worth 1 point if triggered):**
+# Tasks:
+# 1) Reconstruct a short narrative from the frames in chronological order (what seems to be happening).
+# 2) Judge realism (physics, logic, feasibility).
+# 3) Scoring (add 1 point per triggered criterion):
+#    - Physical Implausibility: events/objects/behaviors are impossible or highly implausible.
+#    - Watermark or Tampering: visible watermark OR suspicious blur/smudging/erasure in typical watermark zones (corners, edges, lower thirds).
+#    - Inconsistent Object Scaling: moving object size/perspective shifts erratically relative to background without camera motion.
 
-   - **Criterion 1 (Physical Implausibility)**:  
-     If the reconstructed story describes events, objects, or behaviors that are unrealistic, physically impossible, or highly implausible (e.g., "a man flying in space with an elephant on his back"), assign 1 point. Otherwise, 0.
+# Final classification:
+# - Total points = 0 → verdict = "real" (ai_probability_percent = 0)
+# - Total points = 1 → verdict = "ai_suspected" (ai_probability_percent = 33)
+# - Total points = 2 → verdict = "ai_suspected" (ai_probability_percent = 66)
+# - Total points = 3 → verdict = "ai_detected" (ai_probability_percent = 100)
 
-   - **Criterion 2 (Watermark or Tampering)**:  
-     If any frame contains a visible watermark OR shows suspicious blur/smudging/erasure in typical watermark zones (e.g., corners, lower thirds, edges)—suggesting post-generation watermark removal—assign 1 point. Otherwise, 0.
+# Output strictly as JSON:
+# {
+#   "verdict": "real" | "ai_suspected" | "ai_detected",
+#   "ai_probability_percent": 0 | 33 | 66 | 100,
+#   "story_reconstruction": "Brief narrative of what happens across frames",
+#   "score_breakdown": {
+#     "physical_implausibility": 0 | 1,
+#     "watermark_or_tampering": 0 | 1,
+#     "inconsistent_object_scaling": 0 | 1
+#   },
+#   "key_signals": [{"criterion": "...", "observation": "..."}],
+#   "per_frame_notes": {"frame_index_<i>": "concise anomaly or observation"},
+#   "overall_rationale": "2-5 sentences explaining the score, story realism, and forensic concerns."
+# }
+# Be conservative; only assign points when evidence is clear.
+# """
 
-   - **Criterion 3 (Inconsistent Object Scaling)**:  
-     Compare the aspect ratio or relative scale of moving objects against static background objects across frames. If the moving object’s size, perspective, or proportions change erratically or unrealistically (e.g., a person shrinking/growing without camera motion), assign 1 point. Otherwise, 0.
+FORENSIC_PROMPT = """You are a forensic video analyst. Evaluate the sequence of frames (1 per second) and decide if the video is REAL or AI-GENERATED.
 
-4. **Final Classification**:
-   - Total Score = Sum of points from the 3 criteria (max 3).
-   - **3/3 → "ai_detected" (100% AI)**
-   - **2/3 → "ai_suspected" (66% AI)**
-   - **1/3 → "ai_suspected" (33% AI)**
-   - **0/3 → "real"**
+Your job:
+1. Write one short sentence (max 15 words) describing what the frames show overall.
+2. Score three quick criteria (1 point each if clearly true):
+   - Physical Implausibility: something looks physically impossible or unnatural.
+   - Watermark/Tampering: visible watermark or blurred/erased watermark zone.
+   - Inconsistent Scaling: objects change size or perspective unrealistically.
 
-**Additional Guidance**:
-- Use your own knowledge of physics, human behavior, everyday environments, and visual consistency to judge plausibility.
-- Be conservative: only assign points when evidence is clear.
-- Even if no rule is explicitly violated, if the frames collectively "feel off" (e.g., unnatural lighting shifts, texture crawling, inconsistent shadows, or impossible geometry), lean toward suspicion—but only assign points if one of the three criteria is truly met.
+Final classification:
+- 0 points → verdict = "real" (ai_probability_percent = 0)
+- 1 point → verdict = "ai_suspected" (33)
+- 2 points → verdict = "ai_suspected" (66)
+- 3 points → verdict = "ai_detected" (100)
 
-**OUTPUT STRICTLY IN JSON FORMAT**:
+Return concise JSON only:
 {
   "verdict": "real" | "ai_suspected" | "ai_detected",
   "ai_probability_percent": 0 | 33 | 66 | 100,
-  "story_reconstruction": "Brief narrative of what happens across frames",
-  "score_breakdown": {
+  "story": "one line summary of what happens",
+  "score": {
     "physical_implausibility": 0 | 1,
     "watermark_or_tampering": 0 | 1,
-    "inconsistent_object_scaling": 0 | 1
+    "inconsistent_scaling": 0 | 1
   },
-  "key_signals": [{"criterion": "...", "observation": "..."}],
-  "per_frame_notes": {"frame_index_<i>": "concise anomaly or observation"},
-  "overall_rationale": "2-5 sentences explaining the score, story realism, and forensic concerns."
+  "reasoning": "one line justification combining all criteria"
 }
+
+Keep sentences very short and clear. No extra text outside JSON.
 """
 
 # ---------- VIDEO UTILS ----------
@@ -75,7 +95,7 @@ def encode_jpg(frame, quality=90) -> bytes:
         raise RuntimeError("JPEG encoding failed")
     return buf.tobytes()
 
-def extract_interval_frames(video_path: str, interval_sec: float = 0.5) -> Tuple[List[bytes], List[int]]:
+def extract_interval_frames(video_path: str, interval_sec: float = 1.0) -> Tuple[List[bytes], List[int]]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Could not open video: {0}".format(video_path))
@@ -84,7 +104,10 @@ def extract_interval_frames(video_path: str, interval_sec: float = 0.5) -> Tuple
     if not fps or fps <= 0 or total_frames <= 0:
         raise RuntimeError("Video metadata invalid (fps/frame count).")
     duration = float(total_frames) / float(fps)
-    frame_indices = [min(int(t * fps), total_frames - 1) for t in [i * interval_sec for i in range(int(duration / interval_sec))]]
+
+    # build timestamps 0,1,2,... up to duration (exclusive)
+    stamps = [i * interval_sec for i in range(int(duration / interval_sec))]
+    frame_indices = [min(int(t * fps), total_frames - 1) for t in stamps]
 
     frames_jpg, final_indices = [], []
     for idx in frame_indices:
@@ -132,56 +155,60 @@ def analyze_batched(model: str, frames: List[bytes], batch_size: int = 20) -> Li
         batch = frames[i:i + batch_size]
         res = call_openai_batch(model, batch)
         results.append(res)
-        if res.get("verdict") == "ai_detected" and int(res.get("confidence", 0)) == 100:
+        # early exit if any batch reports definitive AI (100)
+        if res.get("verdict") == "ai_detected" and int(res.get("ai_probability_percent", 0)) == 100:
             break
     return results
 
 def merge_results(batch_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not batch_results:
-        return {"verdict": "inconclusive", "confidence": 0, "overall_rationale": "No results."}
+        # no batches → return a cautious result using the same schema
+        return {
+            "verdict": "ai_suspected",
+            "ai_probability_percent": 33,
+            "overall_rationale": "No batch results available; defaulting to cautious suspicion."
+        }
 
+    # hard priority: any batch with ai_detected and 100% wins
     for r in batch_results:
-        if r.get("verdict") == "ai_detected" and int(r.get("confidence", 0)) == 100:
+        if r.get("verdict") == "ai_detected" and int(r.get("ai_probability_percent", 0)) == 100:
             return {
                 "verdict": "ai_detected",
-                "confidence": 100,
-                "overall_rationale": "Watermark rule triggered in at least one batch.",
+                "ai_probability_percent": 100,
+                "overall_rationale": "At least one batch indicated definitive AI signals (scored 3/3).",
                 "_batches": batch_results
             }
 
-    counts = {"ai_detected": 0, "ai_suspected": 0, "real": 0, "inconclusive": 0}
-    avg_conf = []
+    counts = {"ai_detected": 0, "ai_suspected": 0, "real": 0}
+    probs = []
     for r in batch_results:
-        v = r.get("verdict", "inconclusive")
+        v = r.get("verdict", "ai_suspected")
         counts[v] = counts.get(v, 0) + 1
-        if isinstance(r.get("confidence"), (int, float)):
-            avg_conf.append(float(r["confidence"]))
+        if isinstance(r.get("ai_probability_percent"), (int, float)):
+            probs.append(float(r["ai_probability_percent"]))
+
+    # choose verdict by priority, then average probability as a rough final %
+    avg_prob = (sum(probs) / len(probs)) if probs else 33.0
 
     if counts["ai_detected"] > 0:
         return {
             "verdict": "ai_detected",
-            "confidence": (max(avg_conf) if avg_conf else 85),
-            "overall_rationale": "One or more batches detected strong AI signals.",
+            "ai_probability_percent": int(round(max(probs) if probs else 66)),
+            "overall_rationale": "Multiple frames/batches show strong AI indicators.",
             "_batches": batch_results
         }
     if counts["ai_suspected"] > 0:
         return {
             "verdict": "ai_suspected",
-            "confidence": (sum(avg_conf) / len(avg_conf) if avg_conf else 70),
-            "overall_rationale": "Suspicious signals present across batches.",
+            "ai_probability_percent": int(round(avg_prob)),
+            "overall_rationale": "Some suspicious cues present, but not definitive across all batches.",
             "_batches": batch_results
         }
-    if counts["real"] > 0 and counts["ai_suspected"] == 0 and counts["ai_detected"] == 0:
-        return {
-            "verdict": "real",
-            "confidence": (sum(avg_conf) / len(avg_conf) if avg_conf else 80),
-            "overall_rationale": "No decisive synthetic cues were found in sampled frames.",
-            "_batches": batch_results
-        }
+    # otherwise, lean real
     return {
-        "verdict": "inconclusive",
-        "confidence": (sum(avg_conf) / len(avg_conf) if avg_conf else 50),
-        "overall_rationale": "Evidence insufficient.",
+        "verdict": "real",
+        "ai_probability_percent": int(round(avg_prob)) if avg_prob < 50 else 0,
+        "overall_rationale": "No decisive synthetic cues in sampled frames.",
         "_batches": batch_results
     }
 
@@ -190,19 +217,20 @@ def save_frames(folder: Path, frames_jpg: List[bytes], frame_indices: List[int])
     folder.mkdir(parents=True, exist_ok=True)
     for i, item in enumerate(zip(frames_jpg, frame_indices), 1):
         jpg, idx = item
-        filename = "t{0:04d}_frame_{1}.jpg".format(i, idx)
-        (folder / filename).write_bytes(jpg)
+        name = "t{0:04d}_frame_{1}.jpg".format(i, idx)
+        (folder / name).write_bytes(jpg)
 
-def pretty_console(verdict: str, conf: float):
-    v = verdict.lower()
+def pretty_console(verdict: str, ai_prob: float):
+    v = (verdict or "").lower()
+    p = int(ai_prob)
     if v == "ai_detected":
-        print("\n\033[91m AI DETECTED ({0}%)\033[0m\n".format(int(conf)))
+        print("\n\033[91m AI DETECTED ({0}%)\033[0m\n".format(p))
     elif v == "ai_suspected":
-        print("\n\033[93m  AI SUSPECTED ({0}%)\033[0m\n".format(int(conf)))
+        print("\n\033[93m  AI SUSPECTED ({0}%)\033[0m\n".format(p))
     elif v == "real":
-        print("\n\033[92m REAL ({0}%)\033[0m\n".format(int(conf)))
+        print("\n\033[92m REAL ({0}%)\033[0m\n".format(p))
     else:
-        print("\n\033[90m INCONCLUSIVE ({0}%)\033[0m\n".format(int(conf)))
+        print("\n\033[90m RESULT ({0}%)\033[0m\n".format(p))
 
 # ---------- MAIN ----------
 def main():
@@ -211,8 +239,8 @@ def main():
     ap.add_argument("--out", default="video_analysis.json", help="Where to save final JSON")
     ap.add_argument("--save-frames", default=None, help="Optional folder to write extracted frames")
     ap.add_argument("--model", default="gpt-4o", help="OpenAI model (e.g., gpt-4o, gpt-4o-mini)")
-    ap.add_argument("--interval", type=float, default=0.5, help="Seconds between frames (default 0.5)")
-    ap.add_argument("--max-total", type=int, default=60, help="Max total frames to send (to avoid context errors)")
+    ap.add_argument("--interval", type=float, default=1.0, help="Seconds between frames (default 1.0 sec)")
+    ap.add_argument("--max-total", type=int, default=60, help="Max frames to send (avoid context errors)")
     ap.add_argument("--batch-size", type=int, default=20, help="Images per API request")
     args = ap.parse_args()
 
@@ -232,7 +260,7 @@ def main():
     final["_frame_indices"] = frame_indices
     Path(args.out).write_text(json.dumps(final, indent=2), encoding="utf-8")
 
-    pretty_console(final.get("verdict", "inconclusive"), float(final.get("confidence", 0)))
+    pretty_console(final.get("verdict", "ai_suspected"), float(final.get("ai_probability_percent", 33)))
     print("Saved analysis to: {0}".format(Path(args.out).resolve()))
 
 if __name__ == "__main__":
