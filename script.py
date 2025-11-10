@@ -15,40 +15,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 from openai import OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------- PROMPT (1 frame per second, scoring = 0/33/66/100) ----------
-# FORENSIC_PROMPT = """You are a forensic media analyst. Analyze the sequence of frames — sampled once per second from a video — to assess whether the video is REAL or AI-GENERATED.
-
-# Tasks:
-# 1) Reconstruct a short narrative from the frames in chronological order (what seems to be happening).
-# 2) Judge realism (physics, logic, feasibility).
-# 3) Scoring (add 1 point per triggered criterion):
-#    - Physical Implausibility: events/objects/behaviors are impossible or highly implausible.
-#    - Watermark or Tampering: visible watermark OR suspicious blur/smudging/erasure in typical watermark zones (corners, edges, lower thirds).
-#    - Inconsistent Object Scaling: moving object size/perspective shifts erratically relative to background without camera motion.
-
-# Final classification:
-# - Total points = 0 → verdict = "real" (ai_probability_percent = 0)
-# - Total points = 1 → verdict = "ai_suspected" (ai_probability_percent = 33)
-# - Total points = 2 → verdict = "ai_suspected" (ai_probability_percent = 66)
-# - Total points = 3 → verdict = "ai_detected" (ai_probability_percent = 100)
-
-# Output strictly as JSON:
-# {
-#   "verdict": "real" | "ai_suspected" | "ai_detected",
-#   "ai_probability_percent": 0 | 33 | 66 | 100,
-#   "story_reconstruction": "Brief narrative of what happens across frames",
-#   "score_breakdown": {
-#     "physical_implausibility": 0 | 1,
-#     "watermark_or_tampering": 0 | 1,
-#     "inconsistent_object_scaling": 0 | 1
-#   },
-#   "key_signals": [{"criterion": "...", "observation": "..."}],
-#   "per_frame_notes": {"frame_index_<i>": "concise anomaly or observation"},
-#   "overall_rationale": "2-5 sentences explaining the score, story realism, and forensic concerns."
-# }
-# Be conservative; only assign points when evidence is clear.
-# """
-
 FORENSIC_PROMPT = """You are a forensic video analyst. Evaluate the sequence of frames (1 per second) and decide if the video is REAL or AI-GENERATED.
 
 Your job:
@@ -94,35 +60,6 @@ def encode_jpg(frame, quality=90) -> bytes:
     if not ok:
         raise RuntimeError("JPEG encoding failed")
     return buf.tobytes()
-
-# def extract_interval_frames(video_path: str, interval_sec: float = 1.0) -> Tuple[List[bytes], List[int]]:
-#     cap = cv2.VideoCapture(video_path)
-#     if not cap.isOpened():
-#         raise RuntimeError("Could not open video: {0}".format(video_path))
-#     fps = cap.get(cv2.CAP_PROP_FPS)
-#     total_frames = int(cv2.CAP_PROP_FRAME_COUNT and cap.get(cv2.CAP_PROP_FRAME_COUNT))
-#     if not fps or fps <= 0 or total_frames <= 0:
-#         raise RuntimeError("Video metadata invalid (fps/frame count).")
-#     duration = float(total_frames) / float(fps)
-
-#     # build timestamps 0,1,2,... up to duration (exclusive)
-#     stamps = [i * interval_sec for i in range(int(duration / interval_sec))]
-#     frame_indices = [min(int(t * fps), total_frames - 1) for t in stamps]
-
-#     frames_jpg, final_indices = [], []
-#     for idx in frame_indices:
-#         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-#         ret, frame = cap.read()
-#         if not ret or frame is None:
-#             continue
-#         frame = resize_keep_aspect(frame, max_w=640)
-#         jpg = encode_jpg(frame, quality=90)
-#         frames_jpg.append(jpg)
-#         final_indices.append(idx)
-#     cap.release()
-#     if not frames_jpg:
-#         raise RuntimeError("No frames extracted.")
-#     return frames_jpg, final_indices
 
 
 def extract_interval_frames(video_path: str) -> Tuple[List[bytes], List[int]]:
